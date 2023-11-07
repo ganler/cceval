@@ -17,6 +17,8 @@ import json
 import logging
 import os
 
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 import numpy as np
 import torch
 from accelerate import Accelerator
@@ -142,7 +144,7 @@ def build_datasets(args, tokenizer):
             max_length=args.cfc_seq_length
         )
 
-        features = {}
+        features = {"input_ids": [], "attention_mask": []}
         tokenizer.truncation_side = "left"
         for idx, prompt in enumerate(examples["prompt"]):
             allowed_prompt_length = max_prompt_length - len(crossfile_features["input_ids"][idx])
@@ -151,8 +153,8 @@ def build_datasets(args, tokenizer):
                 truncation=True,
                 max_length=allowed_prompt_length
             )
-            for k in prompt_feats:
-                features.setdefault(k, []).append(crossfile_features[k][idx] + prompt_feats[k][0])
+            for k in features.keys():
+                features[k].append(crossfile_features[k][idx] + prompt_feats[k][0])
 
         # pad to max_seq_length
         tokenizer.padding_side = "left"
@@ -230,7 +232,8 @@ def model_inference(tokenized_datasets, index2taskid, tokenizer):
     def generate_completions(batch):
         output_dict = custom_generate.generate(
             accelerator.unwrap_model(model),
-            **batch,
+            input_ids=batch["input_ids"],
+            attention_mask=batch["attention_mask"],
             max_length=args.max_seq_length,
             temperature=args.temperature,
             top_k=args.top_k,
@@ -261,11 +264,13 @@ def model_inference(tokenized_datasets, index2taskid, tokenizer):
 
     all_preds = []
     all_task_ids = []
+    all_tokens = []
     with torch.no_grad():
         for idx, batch in tqdm(enumerate(dataloader), total=len(dataloader)):
             completions = None
             completion_scores = None
             for seq_idx in range(args.num_return_sequences):
+                all_tokens.extend(batch["attention_mask"].sum(dim=1).tolist())
                 batch_task_id, generated_texts, mean_logp = generate_completions(batch)
                 if seq_idx == 0:
                     all_task_ids.extend(batch_task_id)
@@ -287,9 +292,9 @@ def model_inference(tokenized_datasets, index2taskid, tokenizer):
 
     with open(f"{args.output_dir}/prediction.jsonl", "w", encoding="utf-8") as f_pred:
         id_processed = set()
-        for idx, p in zip(all_task_ids, all_preds):
+        for idx, p, nt in zip(all_task_ids, all_preds, all_tokens):
             if index2taskid[idx] not in id_processed:
-                f_pred.write(json.dumps({"task_id": index2taskid[idx], "pred": p}) + "\n")
+                f_pred.write(json.dumps({"task_id": index2taskid[idx], "pred": p, "n_tokens": nt}) + "\n")
                 id_processed.add(index2taskid[idx])
 
 
