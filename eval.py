@@ -142,7 +142,7 @@ def build_datasets(args, tokenizer):
             max_length=args.cfc_seq_length
         )
 
-        features = {"input_ids": [], "attention_mask": []}
+        features = {}
         tokenizer.truncation_side = "left"
         for idx, prompt in enumerate(examples["prompt"]):
             allowed_prompt_length = max_prompt_length - len(crossfile_features["input_ids"][idx])
@@ -151,8 +151,8 @@ def build_datasets(args, tokenizer):
                 truncation=True,
                 max_length=allowed_prompt_length
             )
-            for k, v in prompt_feats.items():
-                features[k].append(crossfile_features[k][idx] + prompt_feats[k][0])
+            for k in prompt_feats:
+                features.setdefault(k, []).append(crossfile_features[k][idx] + prompt_feats[k][0])
 
         # pad to max_seq_length
         tokenizer.padding_side = "left"
@@ -230,8 +230,7 @@ def model_inference(tokenized_datasets, index2taskid, tokenizer):
     def generate_completions(batch):
         output_dict = custom_generate.generate(
             accelerator.unwrap_model(model),
-            input_ids=batch["input_ids"],
-            attention_mask=batch["attention_mask"],
+            **batch,
             max_length=args.max_seq_length,
             temperature=args.temperature,
             top_k=args.top_k,
