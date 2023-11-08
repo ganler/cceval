@@ -26,7 +26,7 @@ from accelerate.utils import set_seed
 from datasets import load_dataset
 from torch.utils.data import DataLoader, SequentialSampler
 from tqdm import tqdm
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
 
 import custom_generate
 from eval_metric import compute_metric_stmt
@@ -211,13 +211,22 @@ def model_inference(tokenized_datasets, index2taskid, tokenizer):
         assert False, f"{args.dtype=} not implemented"
 
     if args.model_type in ["codelm", "codelm_cfc"]:
+        extra_args = {}
+        if "deepseek-coder" in args.model_name_or_path:
+            extra_args["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+            )
+            extra_args["use_flash_attention_2"] = True
+
         model = AutoModelForCausalLM.from_pretrained(
             args.model_name_or_path,
             torch_dtype=dtype,
             trust_remote_code=True,
-            use_flash_attention_2=True,
-            # pip install flash-attn --no-build-isolation
             revision="main",
+            **extra_args,
         )
     else:
         raise ValueError("Unknown model type")
