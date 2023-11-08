@@ -203,6 +203,8 @@ def model_inference(tokenized_datasets, index2taskid, tokenizer):
             args.model_name_or_path,
             torch_dtype=dtype,
             trust_remote_code=True,
+            use_flash_attention_2=True,
+            # pip install flash-attn --no-build-isolation
             revision="main"
         )
     else:
