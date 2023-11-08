@@ -26,10 +26,7 @@ from accelerate.utils import set_seed
 from datasets import load_dataset
 from torch.utils.data import DataLoader, SequentialSampler
 from tqdm import tqdm
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM
-)
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 import custom_generate
 from eval_metric import compute_metric_stmt
@@ -43,12 +40,7 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-COMMENT_SYMBOL = {
-    "python": "#",
-    "java": "//",
-    "csharp": "//",
-    "typescript": "//"
-}
+COMMENT_SYMBOL = {"python": "#", "java": "//", "csharp": "//", "typescript": "//"}
 
 
 def custom_data_collator(features):
@@ -73,13 +65,22 @@ def build_datasets(args, tokenizer):
     # when generating, we will use the logits of right-most token to predict the next token
     # so the padding should be on the left
     tokenizer.padding_side = "left"
-    tokenizer.pad_token = tokenizer.eos_token if tokenizer.eos_token else tokenizer.bos_token
+    tokenizer.pad_token = (
+        tokenizer.eos_token if tokenizer.eos_token else tokenizer.bos_token
+    )
 
     # load the files into Dataset
-    raw_datasets = load_dataset("json", data_files=args.prompt_file, cache_dir=args.cache_dir)
+    raw_datasets = load_dataset(
+        "json", data_files=args.prompt_file, cache_dir=args.cache_dir
+    )
     raw_datasets = raw_datasets["train"]
-    raw_datasets = raw_datasets.map(lambda example, idx: {'index': idx, **example}, with_indices=True)
-    index2taskid = {idx: md["task_id"] for idx, md in zip(raw_datasets["index"], raw_datasets["metadata"])}
+    raw_datasets = raw_datasets.map(
+        lambda example, idx: {"index": idx, **example}, with_indices=True
+    )
+    index2taskid = {
+        idx: md["task_id"]
+        for idx, md in zip(raw_datasets["index"], raw_datasets["metadata"])
+    }
     column_names = raw_datasets.column_names
 
     # Prompt composition
@@ -89,7 +90,7 @@ def build_datasets(args, tokenizer):
             examples["prompt"],
             padding="max_length",
             truncation=True,
-            max_length=args.max_seq_length - args.gen_length
+            max_length=args.max_seq_length - args.gen_length,
         )
 
         features = {k: t for k, t in tokenized_inputs.items()}
@@ -117,9 +118,15 @@ def build_datasets(args, tokenizer):
                     num_chunk_inc = 0
                     for cfc_idx, cfc_chunk in enumerate(cfc_chunks):
                         if cfc_chunk["score"] > args.min_cfc_score:
-                            add_text = f"{ls_sym} the below code fragment is found in {cfc_chunk['filename']}" + "\n"
-                            cfc_lines = cfc_chunk["retrieved_chunk"].split('\n')
-                            add_text += "\n".join([f"{ls_sym} {cl}" for cl in cfc_lines if cl]) + "\n\n"
+                            add_text = (
+                                f"{ls_sym} the below code fragment is found in {cfc_chunk['filename']}"
+                                + "\n"
+                            )
+                            cfc_lines = cfc_chunk["retrieved_chunk"].split("\n")
+                            add_text += (
+                                "\n".join([f"{ls_sym} {cl}" for cl in cfc_lines if cl])
+                                + "\n\n"
+                            )
                             # check if adding chunk exceeds max length budget for CFC
                             add_text_len = len(tokenizer.tokenize(add_text))
                             if cfc_length + add_text_len <= args.cfc_seq_length:
@@ -135,30 +142,33 @@ def build_datasets(args, tokenizer):
                 crossfile_context.append(cfc_text)
 
             logger.info(
-                f"{augmented_prompt} out of {len(examples['crossfile_context'])} prompts are augmented with cross-file context.")
+                f"{augmented_prompt} out of {len(examples['crossfile_context'])} prompts are augmented with cross-file context."
+            )
 
         tokenizer.truncation_side = "right"
         crossfile_features = tokenizer(
-            crossfile_context,
-            truncation=True,
-            max_length=args.cfc_seq_length
+            crossfile_context, truncation=True, max_length=args.cfc_seq_length
         )
 
         features = {"input_ids": [], "attention_mask": []}
         tokenizer.truncation_side = "left"
         for idx, prompt in enumerate(examples["prompt"]):
-            allowed_prompt_length = max_prompt_length - len(crossfile_features["input_ids"][idx])
+            allowed_prompt_length = max_prompt_length - len(
+                crossfile_features["input_ids"][idx]
+            )
             prompt_feats = tokenizer(
-                [prompt],
-                truncation=True,
-                max_length=allowed_prompt_length
+                [prompt], truncation=True, max_length=allowed_prompt_length
             )
             for k in features.keys():
                 features[k].append(crossfile_features[k][idx] + prompt_feats[k][0])
 
         # pad to max_seq_length
         tokenizer.padding_side = "left"
-        features = tokenizer.pad(features, padding="max_length", max_length=args.max_seq_length - args.gen_length)
+        features = tokenizer.pad(
+            features,
+            padding="max_length",
+            max_length=args.max_seq_length - args.gen_length,
+        )
         features["index"] = examples["index"]
         return features
 
@@ -181,22 +191,24 @@ def build_datasets(args, tokenizer):
             desc="Running tokenizer on dataset",
         )
     else:
-        raise NotImplementedError("prepare feature functions not implemented for new model type")
+        raise NotImplementedError(
+            "prepare feature functions not implemented for new model type"
+        )
 
     return tokenized_datasets, index2taskid
 
 
 def model_inference(tokenized_datasets, index2taskid, tokenizer):
-    if args.dtype == 'fp16':
+    if args.dtype == "fp16":
         dtype = torch.float16
-    elif args.dtype == 'fp32':
+    elif args.dtype == "fp32":
         dtype = torch.float32
-    elif args.dtype == 'bf16':
+    elif args.dtype == "bf16":
         dtype = torch.bfloat16
-    elif args.dtype == 'int8':
+    elif args.dtype == "int8":
         dtype = torch.int8
     else:
-        assert False, f'{args.dtype=} not implemented'
+        assert False, f"{args.dtype=} not implemented"
 
     if args.model_type in ["codelm", "codelm_cfc"]:
         model = AutoModelForCausalLM.from_pretrained(
@@ -205,7 +217,7 @@ def model_inference(tokenized_datasets, index2taskid, tokenizer):
             trust_remote_code=True,
             use_flash_attention_2=True,
             # pip install flash-attn --no-build-isolation
-            revision="main"
+            revision="main",
         )
     else:
         raise ValueError("Unknown model type")
@@ -218,7 +230,7 @@ def model_inference(tokenized_datasets, index2taskid, tokenizer):
         tokenized_datasets,
         sampler=data_sampler,
         collate_fn=custom_data_collator,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
     )
 
     model = accelerator.prepare_model(model)
@@ -227,7 +239,9 @@ def model_inference(tokenized_datasets, index2taskid, tokenizer):
     if not os.path.isdir(args.output_dir):
         os.mkdir(args.output_dir)
 
-    tokenizer.pad_token = tokenizer.eos_token if tokenizer.eos_token else tokenizer.bos_token
+    tokenizer.pad_token = (
+        tokenizer.eos_token if tokenizer.eos_token else tokenizer.bos_token
+    )
     prompt_length = args.max_seq_length - args.gen_length
 
     @torch.no_grad()
@@ -245,7 +259,7 @@ def model_inference(tokenized_datasets, index2taskid, tokenizer):
             num_return_sequences=1,
             pad_token_id=tokenizer.pad_token_id,
             return_dict_in_generate=True,
-            output_scores=True
+            output_scores=True,
         )
         batch_task_id = batch["index"]
         batch_pred = accelerator.pad_across_processes(
@@ -256,7 +270,9 @@ def model_inference(tokenized_datasets, index2taskid, tokenizer):
             scores, dim=1, pad_index=tokenizer.pad_token_id
         )
         # batch_scores.shape = (batch_size x num_gpus x num_return_sequences, max_length)
-        batch_task_id, batch_pred, batch_scores = accelerator.gather((batch_task_id, batch_pred, batch_scores))
+        batch_task_id, batch_pred, batch_scores = accelerator.gather(
+            (batch_task_id, batch_pred, batch_scores)
+        )
 
         batch_pred = batch_pred[:, prompt_length:]
         generated_texts = tokenizer.batch_decode(batch_pred, skip_special_tokens=True)
@@ -296,7 +312,12 @@ def model_inference(tokenized_datasets, index2taskid, tokenizer):
         id_processed = set()
         for idx, p, nt in zip(all_task_ids, all_preds, all_tokens):
             if index2taskid[idx] not in id_processed:
-                f_pred.write(json.dumps({"task_id": index2taskid[idx], "pred": p, "n_tokens": nt}) + "\n")
+                f_pred.write(
+                    json.dumps(
+                        {"task_id": index2taskid[idx], "pred": p, "n_tokens": nt}
+                    )
+                    + "\n"
+                )
                 id_processed.add(index2taskid[idx])
 
 
@@ -304,78 +325,127 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     # model inference args
     parser.add_argument("--language", type=str, required=True, help="language name")
-    parser.add_argument("--model_name_or_path", default=None, type=str, help="Pre-trained Model Path")
+    parser.add_argument(
+        "--model_name_or_path", default=None, type=str, help="Pre-trained Model Path"
+    )
     parser.add_argument(
         "--model_type",
         type=str,
         default="codelm",
         choices=["codelm", "codelm_cfc"],
-        help="Model type to be loaded"
+        help="Model type to be loaded",
     )
-    parser.add_argument("--prompt_file", type=str, default=None, help="file with a list of prompts")
-    parser.add_argument("--gen_length", type=int, default=50, help="max length of generated token sequence")
-    parser.add_argument("--max_seq_length", type=int, default=2048, help="max length of prompt")
+    parser.add_argument(
+        "--prompt_file", type=str, default=None, help="file with a list of prompts"
+    )
+    parser.add_argument(
+        "--gen_length",
+        type=int,
+        default=50,
+        help="max length of generated token sequence",
+    )
+    parser.add_argument(
+        "--max_seq_length", type=int, default=2048, help="max length of prompt"
+    )
     parser.add_argument(
         "--cfc_seq_length",
         type=int,
         default=512,
-        help="For model_type=codelm_cfc: Text sequence length corresponding to the retrieved nodes"
+        help="For model_type=codelm_cfc: Text sequence length corresponding to the retrieved nodes",
     )
     parser.add_argument(
         "--min_cfc_score",
         type=float,
-        default=float('-inf'),
-        help="For model_type=codelm_cfc: min score of a chunk to be considered as CFC chunk"
+        default=float("-inf"),
+        help="For model_type=codelm_cfc: min score of a chunk to be considered as CFC chunk",
     )
-    parser.add_argument("--batch_size", type=int, default=32, help="batch size for code completion")
-    parser.add_argument("--stop_token", type=str, default=None, help="Token at which text generation is stopped")
+    parser.add_argument(
+        "--batch_size", type=int, default=32, help="batch size for code completion"
+    )
+    parser.add_argument(
+        "--stop_token",
+        type=str,
+        default=None,
+        help="Token at which text generation is stopped",
+    )
     parser.add_argument("--cache_dir", type=str, default=None)
     parser.add_argument(
         "--temperature",
         type=float,
         default=0.2,
-        help="temperature of 1.0 has no effect, lower tend toward greedy sampling"
+        help="temperature of 1.0 has no effect, lower tend toward greedy sampling",
     )
-    parser.add_argument("--output_dir", type=str, default="output_dir", help="output directory to save predictions")
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="output_dir",
+        help="output directory to save predictions",
+    )
     parser.add_argument("--top_k", type=int, default=0)
     parser.add_argument("--top_p", type=float, default=0.95)
-    parser.add_argument("--seed", type=int, default=42, help="random seed for initialization")
-    parser.add_argument("--no_cuda", action="store_true", help="Avoid using CUDA when available")
-    parser.add_argument("--num_return_sequences", type=int, default=1, help="The number of samples to generate.")
-    parser.add_argument("--repetition_penalty", type=float, default=1.0, help="The parameter for repetition penalty.")
+    parser.add_argument(
+        "--seed", type=int, default=42, help="random seed for initialization"
+    )
+    parser.add_argument(
+        "--no_cuda", action="store_true", help="Avoid using CUDA when available"
+    )
+    parser.add_argument(
+        "--num_return_sequences",
+        type=int,
+        default=1,
+        help="The number of samples to generate.",
+    )
+    parser.add_argument(
+        "--repetition_penalty",
+        type=float,
+        default=1.0,
+        help="The parameter for repetition penalty.",
+    )
     parser.add_argument(
         "--preprocessing_num_workers",
         type=int,
         default=1,
-        help="The number of processes to use for the preprocessing."
+        help="The number of processes to use for the preprocessing.",
     )
     parser.add_argument(
         "--overwrite_cache",
         type=bool,
         default=False,
-        help="Overwrite the cached training and evaluation sets"
+        help="Overwrite the cached training and evaluation sets",
     )
-    parser.add_argument("--dtype", type=str, default='bf16')
-    parser.add_argument("--do_sample", action="store_true", help="whether we do sampling or greedy/beam-search")
-    parser.add_argument("--num_beams", type=int, default=1, help="num of beam for beam-search")
+    parser.add_argument("--dtype", type=str, default="bf16")
+    parser.add_argument(
+        "--do_sample",
+        action="store_true",
+        help="whether we do sampling or greedy/beam-search",
+    )
+    parser.add_argument(
+        "--num_beams", type=int, default=1, help="num of beam for beam-search"
+    )
     # compute metric args
     parser.add_argument(
         "--ts_lib",
         type=str,
         default="build/python-lang-parser.so",
-        help="tree-sitter lib for tokenize code"
+        help="tree-sitter lib for tokenize code",
     )
     # only compute metric
-    parser.add_argument("--only_compute_metric", action="store_true", help="only compute metric")
+    parser.add_argument(
+        "--only_compute_metric", action="store_true", help="only compute metric"
+    )
     args = parser.parse_args()
     set_seed(args.seed, device_specific=False)
 
     if args.num_return_sequences > 1:
-        assert args.do_sample, "sampling must be set to True when num_return_sequences > 1"
+        assert (
+            args.do_sample
+        ), "sampling must be set to True when num_return_sequences > 1"
 
     accelerator = Accelerator()
     if not args.only_compute_metric:
-        tokenizer = AutoTokenizer.from_pretrained(args.model_name_or_path, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(
+            args.model_name_or_path, trust_remote_code=True
+        )
         tokenized_datasets, index2taskid = build_datasets(args, tokenizer)
         model_inference(tokenized_datasets, index2taskid, tokenizer)
 
