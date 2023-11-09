@@ -255,14 +255,23 @@ def model_inference(tokenized_datasets, index2taskid, tokenizer):
 
     @torch.no_grad()
     def generate_completions(batch):
+        optional_args = {
+            "temperature": args.temperature,
+            "top_k": args.top_k,
+            "top_p": args.top_p,
+        }
+
+        if not args.do_sample:
+            optional_args.pop("temperature")
+            optional_args.pop("top_k")
+            optional_args.pop("top_p")
+
         output_dict = custom_generate.generate(
             accelerator.unwrap_model(model),
             input_ids=batch["input_ids"],
             attention_mask=batch["attention_mask"],
             max_length=args.max_seq_length,
-            temperature=args.temperature,
-            top_k=args.top_k,
-            top_p=args.top_p,
+            **optional_args,
             do_sample=args.do_sample,
             num_beams=args.num_beams,
             num_return_sequences=1,
