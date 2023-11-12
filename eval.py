@@ -26,7 +26,12 @@ from accelerate.utils import set_seed
 from datasets import load_dataset
 from torch.utils.data import DataLoader, SequentialSampler
 from tqdm import tqdm
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import (
+    AutoTokenizer,
+    AutoModelForCausalLM,
+    BitsAndBytesConfig,
+    PreTrainedTokenizerFast,
+)
 
 import custom_generate
 from eval_metric import compute_metric_stmt
@@ -60,7 +65,7 @@ def custom_data_collator(features):
     return batch
 
 
-def build_datasets(args, tokenizer):
+def build_datasets(args, tokenizer: PreTrainedTokenizerFast):
     # Initialize the model and tokenizer
     # when generating, we will use the logits of right-most token to predict the next token
     # so the padding should be on the left
@@ -105,8 +110,8 @@ def build_datasets(args, tokenizer):
         if use_key == "text":
             crossfile_context = [ex["text"] for ex in examples["crossfile_context"]]
         else:
+            n_cfc_constrained = 0
             ls_sym = COMMENT_SYMBOL[args.language]
-            num_chunk_inc_prompt = []
             augmented_prompt = 0
             for cfc_chunks in examples["crossfile_context"]:
                 cfc_chunks = cfc_chunks["list"]  # a list of dict
@@ -115,34 +120,56 @@ def build_datasets(args, tokenizer):
                     # at least 1 relevant cfc_chunk found
                     init_cfc_text = f"{ls_sym} Here are some relevant code fragments from other files of the repo:\n\n"
                     cfc_length = len(tokenizer.tokenize(init_cfc_text))
-                    num_chunk_inc = 0
-                    for cfc_idx, cfc_chunk in enumerate(cfc_chunks):
+                    for i_chunk in range(len(cfc_chunks)):
+                        if args.bottom_up:
+                            i_chunk = len(cfc_chunks) - i_chunk - 1
+                        cfc_chunk = cfc_chunks[i_chunk]
                         if cfc_chunk["score"] > args.min_cfc_score:
                             add_text = (
                                 f"{ls_sym} the below code fragment is found in {cfc_chunk['filename']}"
                                 + "\n"
                             )
                             cfc_lines = cfc_chunk["retrieved_chunk"].split("\n")
-                            add_text += (
-                                "\n".join([f"{ls_sym} {cl}" for cl in cfc_lines if cl])
-                                + "\n\n"
+                            add_text += "\n".join(
+                                [f"{ls_sym} {cl}" for cl in cfc_lines if cl]
                             )
                             # check if adding chunk exceeds max length budget for CFC
-                            add_text_len = len(tokenizer.tokenize(add_text))
-                            if cfc_length + add_text_len <= args.cfc_seq_length:
-                                cfc_text += add_text
-                                cfc_length += add_text_len
-                                num_chunk_inc += 1
-                            else:
+                            CHUNK_SEP = "\n\n"
+                            # "- 2" is for the ending "\n\n"
+                            token_budget_left = args.cfc_seq_length - cfc_length - 2
+                            if token_budget_left <= args.cfc_seq_length * 0.1:
+                                # if the remaining budget is too small, skip
                                 break
-                    num_chunk_inc_prompt.append(num_chunk_inc)
-                    if num_chunk_inc > 0:
+                            chunk_tokens = tokenizer.tokenize(
+                                add_text, max_length=token_budget_left, truncation=True
+                            )
+                            # map the chunk to the original code
+                            true_add_text = tokenizer.convert_tokens_to_string(
+                                chunk_tokens
+                            )
+                            # accumulate text
+                            if args.bottom_up:
+                                cfc_text = (
+                                    add_text[: len(true_add_text)]
+                                    + CHUNK_SEP
+                                    + cfc_text
+                                )
+                            else:
+                                cfc_text += add_text[: len(true_add_text)] + CHUNK_SEP
+                            cfc_length += len(CHUNK_SEP) + len(chunk_tokens)
+                            if cfc_length >= args.cfc_seq_length:
+                                n_cfc_constrained += 1
+                                break
+                    if cfc_text:
                         cfc_text = init_cfc_text + cfc_text
                         augmented_prompt += 1
                 crossfile_context.append(cfc_text)
 
             logger.info(
                 f"{augmented_prompt} out of {len(examples['crossfile_context'])} prompts are augmented with cross-file context."
+            )
+            logger.info(
+                f"{n_cfc_constrained} out of {len(examples['crossfile_context'])} prompts did not use *ALL* CFC chunks due to length constraint."
             )
 
         tokenizer.truncation_side = "right"
@@ -166,8 +193,8 @@ def build_datasets(args, tokenizer):
         tokenizer.padding_side = "left"
         features = tokenizer.pad(
             features,
-            padding="max_length",
-            max_length=args.max_seq_length - args.gen_length,
+            padding="longest",
+            max_length=max_prompt_length,
         )
         features["index"] = examples["index"]
         return features
@@ -450,6 +477,11 @@ if __name__ == "__main__":
     # only compute metric
     parser.add_argument(
         "--only_compute_metric", action="store_true", help="only compute metric"
+    )
+    parser.add_argument(
+        "--bottom-up",
+        action="store_true",
+        help="Prioritize to include bottom chunks but keep their order",
     )
     args = parser.parse_args()
     set_seed(args.seed, device_specific=False)
