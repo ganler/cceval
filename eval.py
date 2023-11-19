@@ -100,6 +100,7 @@ def build_datasets(args, tokenizer: PreTrainedTokenizerFast):
 
         features = {k: t for k, t in tokenized_inputs.items()}
         features["index"] = examples["index"]
+        features["complete_prompt"] = examples["prompt"]
         return features
 
     def prepare_features_cfc(examples):
@@ -197,6 +198,9 @@ def build_datasets(args, tokenizer: PreTrainedTokenizerFast):
             max_length=max_prompt_length,
         )
         features["index"] = examples["index"]
+        features["complete_prompt"] = [
+            p + cfc for p, cfc in zip(prompt, crossfile_context)
+        ]
         return features
 
     if args.model_type in ["codelm", "seq2seqlm"]:
@@ -328,12 +332,14 @@ def model_inference(tokenized_datasets, index2taskid, tokenizer):
     all_preds = []
     all_task_ids = []
     all_tokens = []
+    all_prompt_text = []
     with torch.no_grad():
         for idx, batch in tqdm(enumerate(dataloader), total=len(dataloader)):
             completions = None
             completion_scores = None
             for seq_idx in range(args.num_return_sequences):
                 all_tokens.extend(batch["attention_mask"].sum(dim=1).tolist())
+                all_prompt_text.extend(batch.pop("complete_prompt"))
                 batch_task_id, generated_texts, mean_logp = generate_completions(batch)
                 if seq_idx == 0:
                     all_task_ids.extend(batch_task_id)
@@ -358,8 +364,21 @@ def model_inference(tokenized_datasets, index2taskid, tokenizer):
         for idx, p, nt in zip(all_task_ids, all_preds, all_tokens):
             if index2taskid[idx] not in id_processed:
                 f_pred.write(
+                    json.dumps({"task_id": index2taskid[idx], "pred": p}) + "\n"
+                )
+                id_processed.add(index2taskid[idx])
+
+    with open(f"{args.output_dir}/input.jsonl", "w", encoding="utf-8") as f_input:
+        id_processed = set()
+        for idx, complete_prompt, nt in zip(all_task_ids, all_prompt_text, all_tokens):
+            if index2taskid[idx] not in id_processed:
+                f_input.write(
                     json.dumps(
-                        {"task_id": index2taskid[idx], "pred": p, "n_tokens": nt}
+                        {
+                            "task_id": index2taskid[idx],
+                            "complete_prompt": complete_prompt,
+                            "n_tokens": nt,
+                        }
                     )
                     + "\n"
                 )

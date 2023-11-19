@@ -4,6 +4,8 @@ This repository contains the data and inference code of the NeurIPS 2023  (Datas
 
 ## Requirements
 - Uncompress the CrossCodeEval data via `tar -xvJf data/crosscodeeval_data.tar.xz  -C data/`
+  - The data contains {baseline, retrieval, retrieval w/ ref.} setting x {bm25, UniXCoder, OpenAI Ada} retriever.
+  - Please email us if you need the raw data. 
 - Install dependencies via `pip install -r requirements.txt`
 - Build tree sitter via `bash build_treesitter.sh`
 - Configure `accelerate` via `accelerate config` if you haven't. A reference configuration is available at `cceval_config.yaml`
@@ -18,15 +20,16 @@ export model_name=Salesforce/codegen-350M-mono
 export lang=python
 export ts_lib=./build/$lang-lang-parser.so
 export dtype=bf16 # or fp16
-export prompt_file=./data/crosscodeeval_data/$lang/line_completion_rg1_bm25.jsonl
+export prompt_file=./data/crosscodeeval_data/$lang/line_completion_rg1_bm25.jsonl # or other options in the dir, which corresponds to different retrieval methods and/or retrieval settings
 export max_seq_length=2048
-export batch_size=16
+export cfc_seq_length=512 
+export batch_size=16 # reduce for larger models
 export output_dir=/tmp/crosscodeeval_testrun/
 
 accelerate launch eval.py \
         --model_type $model_type \
         --model_name_or_path $model_name \
-        --cfc_seq_length 512 \
+        --cfc_seq_length $cfc_seq_length \
         --prompt_file $prompt_file \
         --gen_length 50 \
         --max_seq_length $max_seq_length \
@@ -48,7 +51,7 @@ You may run sampling via the following (additional) args:
         --num_return_sequences 5 \
 ```
 
-
+Additionally, please see `openai_inference.py` for OpenAI model benchmarking.
 ## Citation
 
 ```

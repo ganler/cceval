@@ -18,8 +18,8 @@ export output_dir=$HOME/cceval_results_dscoder/repocoder # x
 
 # max_seq_lengths=(2 4 6 8) # in "k"
 # batch_sizes=(24 12 8 6)
-max_seq_lengths=(6 8) # in "k"
-batch_sizes=(8 6)
+max_seq_lengths=(4) # in "k"
+batch_sizes=(12)
 
 for ((i=0; i<${#max_seq_lengths[@]}; i++)); do
     max_seq_length=$((max_seq_lengths[i] * 1024))
