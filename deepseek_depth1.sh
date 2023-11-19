@@ -15,8 +15,8 @@ export prompt_file=./data/crosscodeeval_data/$lang/line_completion_depth1_filter
 export model_type=codelm_cfc # x codelm_cfc | codelm
 export output_dir=$HOME/cceval_results_dscoder/depth1 # x
 
-max_seq_lengths=(2 4 6 8) # in "k"
-batch_sizes=(24 12 8 6)
+max_seq_lengths=(2 4 8) # in "k"
+batch_sizes=(24 12 6)
 
 for ((i=0; i<${#max_seq_lengths[@]}; i++)); do
     max_seq_length=$((max_seq_lengths[i] * 1024))

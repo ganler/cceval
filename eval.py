@@ -87,6 +87,7 @@ def build_datasets(args, tokenizer: PreTrainedTokenizerFast):
         for idx, md in zip(raw_datasets["index"], raw_datasets["metadata"])
     }
     column_names = raw_datasets.column_names
+    index2prompt = {}
 
     # Prompt composition
     def prepare_features(examples):
@@ -100,7 +101,8 @@ def build_datasets(args, tokenizer: PreTrainedTokenizerFast):
 
         features = {k: t for k, t in tokenized_inputs.items()}
         features["index"] = examples["index"]
-        features["complete_prompt"] = examples["prompt"]
+        for idx, prompt in zip(examples["index"], examples["prompt"]):
+            index2prompt[idx] = prompt
         return features
 
     def prepare_features_cfc(examples):
@@ -198,9 +200,10 @@ def build_datasets(args, tokenizer: PreTrainedTokenizerFast):
             max_length=max_prompt_length,
         )
         features["index"] = examples["index"]
-        features["complete_prompt"] = [
-            p + cfc for p, cfc in zip(prompt, crossfile_context)
-        ]
+        for idx, prompt, cfc in zip(
+            examples["index"], examples["prompt"], crossfile_context
+        ):
+            index2prompt[idx] = cfc + prompt
         return features
 
     if args.model_type in ["codelm", "seq2seqlm"]:
@@ -226,10 +229,10 @@ def build_datasets(args, tokenizer: PreTrainedTokenizerFast):
             "prepare feature functions not implemented for new model type"
         )
 
-    return tokenized_datasets, index2taskid
+    return tokenized_datasets, index2taskid, index2prompt
 
 
-def model_inference(tokenized_datasets, index2taskid, tokenizer):
+def model_inference(tokenized_datasets, index2taskid, index2prompt, tokenizer):
     if args.dtype == "fp16":
         dtype = torch.float16
     elif args.dtype == "fp32":
@@ -332,14 +335,12 @@ def model_inference(tokenized_datasets, index2taskid, tokenizer):
     all_preds = []
     all_task_ids = []
     all_tokens = []
-    all_prompt_text = []
     with torch.no_grad():
         for idx, batch in tqdm(enumerate(dataloader), total=len(dataloader)):
             completions = None
             completion_scores = None
             for seq_idx in range(args.num_return_sequences):
                 all_tokens.extend(batch["attention_mask"].sum(dim=1).tolist())
-                all_prompt_text.extend(batch.pop("complete_prompt"))
                 batch_task_id, generated_texts, mean_logp = generate_completions(batch)
                 if seq_idx == 0:
                     all_task_ids.extend(batch_task_id)
@@ -370,13 +371,13 @@ def model_inference(tokenized_datasets, index2taskid, tokenizer):
 
     with open(f"{args.output_dir}/input.jsonl", "w", encoding="utf-8") as f_input:
         id_processed = set()
-        for idx, complete_prompt, nt in zip(all_task_ids, all_prompt_text, all_tokens):
+        for idx, nt in zip(all_task_ids, all_tokens):
             if index2taskid[idx] not in id_processed:
                 f_input.write(
                     json.dumps(
                         {
                             "task_id": index2taskid[idx],
-                            "complete_prompt": complete_prompt,
+                            "complete_prompt": index2prompt[idx],
                             "n_tokens": nt,
                         }
                     )
@@ -515,8 +516,8 @@ if __name__ == "__main__":
         tokenizer = AutoTokenizer.from_pretrained(
             args.model_name_or_path, trust_remote_code=True
         )
-        tokenized_datasets, index2taskid = build_datasets(args, tokenizer)
-        model_inference(tokenized_datasets, index2taskid, tokenizer)
+        tokenized_datasets, index2taskid, index2prompt = build_datasets(args, tokenizer)
+        model_inference(tokenized_datasets, index2taskid, index2prompt, tokenizer)
 
     # check if the process is the main process
     if accelerator.is_main_process:
